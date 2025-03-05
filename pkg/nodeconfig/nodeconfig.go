@@ -8,9 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pkg/errors"
-	"github.com/rancher/k3s/pkg/configfilearg"
-	"github.com/rancher/k3s/pkg/version"
+	"github.com/k3s-io/k3s/pkg/configfilearg"
+	"github.com/k3s-io/k3s/pkg/daemons/config"
+	"github.com/k3s-io/k3s/pkg/version"
+	pkgerrors "github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -18,6 +19,7 @@ var (
 	NodeArgsAnnotation       = version.Program + ".io/node-args"
 	NodeEnvAnnotation        = version.Program + ".io/node-env"
 	NodeConfigHashAnnotation = version.Program + ".io/node-config-hash"
+	ClusterEgressLabel       = "egress." + version.Program + ".io/cluster"
 )
 
 const (
@@ -43,7 +45,7 @@ func getNodeArgs() (string, error) {
 	}
 	nodeArgs, err := json.Marshal(nodeArgsList)
 	if err != nil {
-		return "", errors.Wrap(err, "Failed to retrieve argument list for node")
+		return "", pkgerrors.WithMessage(err, "Failed to retrieve argument list for node")
 	}
 	return string(nodeArgs), nil
 }
@@ -63,12 +65,16 @@ func getNodeEnv() (string, error) {
 	}
 	k3sEnvJSON, err := json.Marshal(k3sEnv)
 	if err != nil {
-		return "", errors.Wrap(err, "Failed to retrieve environment map for node")
+		return "", pkgerrors.WithMessage(err, "Failed to retrieve environment map for node")
 	}
 	return string(k3sEnvJSON), nil
 }
 
-func SetNodeConfigAnnotations(node *corev1.Node) (bool, error) {
+// SetNodeConfigAnnotations stores a redacted version of the k3s cli args and
+// environment variables as annotations on the node object. It also stores a
+// hash of the combined args + variables. These are used by other components
+// to determine if the node configuration has been changed.
+func SetNodeConfigAnnotations(nodeConfig *config.Node, node *corev1.Node) (bool, error) {
 	nodeArgs, err := getNodeArgs()
 	if err != nil {
 		return false, err
@@ -97,21 +103,46 @@ func SetNodeConfigAnnotations(node *corev1.Node) (bool, error) {
 	return true, nil
 }
 
+// SetNodeConfigLabels adds labels for functionality flags
+// that may not be present on down-level or up-level nodes.
+// These labels are used by other components to determine whether
+// or not a node supports particular functionality.
+func SetNodeConfigLabels(nodeConfig *config.Node, node *corev1.Node) (bool, error) {
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+	_, hasLabel := node.Labels[ClusterEgressLabel]
+	switch nodeConfig.EgressSelectorMode {
+	case config.EgressSelectorModeCluster, config.EgressSelectorModePod:
+		if !hasLabel {
+			node.Labels[ClusterEgressLabel] = "true"
+			return true, nil
+		}
+	default:
+		if hasLabel {
+			delete(node.Labels, ClusterEgressLabel)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func isSecret(key string) bool {
 	secretData := []string{
 		version.ProgramUpper + "_TOKEN",
 		version.ProgramUpper + "_DATASTORE_ENDPOINT",
 		version.ProgramUpper + "_AGENT_TOKEN",
 		version.ProgramUpper + "_CLUSTER_SECRET",
+		version.ProgramUpper + "_VPN_AUTH",
 		"AWS_ACCESS_KEY_ID",
 		"AWS_SECRET_ACCESS_KEY",
 		"--token",
 		"-t",
 		"--agent-token",
 		"--datastore-endpoint",
-		"--cluster-secret",
 		"--etcd-s3-access-key",
 		"--etcd-s3-secret-key",
+		"--vpn-auth",
 	}
 	for _, secret := range secretData {
 		if key == secret {

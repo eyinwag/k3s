@@ -1,15 +1,14 @@
-// +build !no_stage
+//go:build !no_stage
 
 package deploy
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -38,8 +37,8 @@ staging:
 		p := filepath.Join(dataDir, name)
 		os.MkdirAll(filepath.Dir(p), 0700)
 		logrus.Info("Writing manifest: ", p)
-		if err := ioutil.WriteFile(p, content, 0600); err != nil {
-			return errors.Wrapf(err, "failed to write to %s", name)
+		if err := os.WriteFile(p, content, 0600); err != nil {
+			return pkgerrors.WithMessagef(err, "failed to write to %s", name)
 		}
 	}
 
